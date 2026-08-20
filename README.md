@@ -2,7 +2,7 @@
 
 
 <div align="center">
-  <img src="dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
+  <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
 </div>
 
 ---
