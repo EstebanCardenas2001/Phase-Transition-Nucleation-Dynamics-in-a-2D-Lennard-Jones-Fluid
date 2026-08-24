@@ -4,9 +4,7 @@
 <div align="center">
   <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
 </div>
-[![Macroscopic 32k Simulation Phase Transition](<img width="1360" height="944" alt="Screenshot" src="https://github.com/user-attachments/assets/66cd0fa3-4698-46c1-9743-0584b61f54bc" />
-)](https://youtu.be/kXBRlVEVq5Y
-)
+[![Macroscopic 32k Simulation Phase Transition](https://github.com/user-attachments/assets/66cd0fa3-4698-46c1-9743-0584b61f54bc)](https://youtu.be/kXBRlVEVq5Y)
 ---
 
 ## Project Overview
