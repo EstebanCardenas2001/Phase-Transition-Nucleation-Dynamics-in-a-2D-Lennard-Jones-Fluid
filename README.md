@@ -34,11 +34,42 @@ To extract physical meaning from the raw trajectory data, the project includes a
 | **Energy & Temp** | Tracks the target vs. actual temperature and the corresponding drops in potential energy as bonds form. |
 | **Order Parameter** | Plots the fraction of particles belonging to the largest single cluster, capturing the exact moment of symmetry breaking. |
 
-## Phase 2: Cloud Scaling (In Progress)
+# Phase 2: Macroscopic Phase Transition & Nucleation Dynamics
 
-While pure NumPy vectorization handles $N = 4,000$ to $N = 8,000$ efficiently for overnight execution, approaching the true thermodynamic limit requires migrating the $O(N^2)$ tensor algebra to dedicated hardware. 
+This phase scales the 2D Lennard-Jones fluid simulation to macroscopic dimensions ($N = 32,768$ particles) to observe true first-order phase transitions, latent heat extraction, and the nucleation of a polycrystalline solid. 
 
-The next phase of this project scales the simulation environment to a **Tesla T4 GPU instance on CloudVeneto**. By refactoring the compute core into PyTorch, the matrix operations will run entirely in VRAM via CUDA, allowing massive system sizes ($N > 20,000$) and highly granular temperature ladders in a fraction of the compute time.
+By drastically increasing the system size, we transition from observing isolated microscopic droplet formations to simulating a massive, interconnected thermodynamic ensemble.
+
+##  Computational Physics: The GPU Force Engine
+
+Scaling the system to 32,768 particles introduces a severe $O(N^2)$ computational bottleneck. Calculating the pairwise distance matrix for periodic boundaries instantaneously requires over 14 GB of VRAM, which exceeds standard hardware limits and causes memory fragmentation.
+
+To bypass this and achieve maximum hardware saturation on an NVIDIA Tesla T4, the force engine in `part2_generate_gpu.py` was completely rewritten using a **Chunked VRAM algorithm**:
+* **Memory Optimization:** Slices the particle tensor into chunks of 1024, keeping the peak VRAM footprint safely below 3 GB.
+* **In-Place Operations:** Utilizes `.sub_()` to execute periodic boundary vector subtractions directly in memory, preventing temporary tensor bloat.
+* **100% Compute Saturation:** Feeds the CUDA cores exactly as much data as they can mathematically process per cycle, maintaining a constant 100% GPU utilization without memory overhead.
+
+## Thermodynamics & Latent Heat
+
+The simulation employs a cooling ladder over 60,000 integration steps ($10,000$ burn-in, $50,000$ production), chilling the system from a hot gas phase ($T=2.0$) down to absolute zero ($T=0.0$).
+
+* **Hexagonal Crystallization:** As the system cools, particles fall into deep Lennard-Jones potential wells, snapping into a highly ordered 2D hexagonal lattice. The local coordination density histogram proves this with a massive peak at $n=6$.
+* **Latent Heat Extraction:** The condensation process generates massive amounts of kinetic energy (heat). To prevent the system from artificially reheating, an aggressive Andersen thermostat ($\nu = 1.0$) was implemented to efficiently scrub the latent heat and force the system to follow the target temperature trajectory.
+
+##  The Polycrystalline State
+
+Instead of forming a single, perfect monocrystal, the rapid cooling schedule forces the fluid to form thousands of independent nucleation sites simultaneously. 
+
+By tracking the **Structural Order Parameter** ($m$)—defined as the fraction of the total particles residing in the largest single connected droplet—we observe that $m$ peaks at less than $5\%$. The resulting solid is a "shattered" polycrystalline state made up of distinct crystal grains with mismatched lattice alignments.
+
+##  Repository Files (Git LFS)
+
+Due to the massive scale of the data, the outputs of this simulation are tracked using **Git LFS**.
+
+* `part2_generate_gpu.py`: The CUDA-accelerated, VRAM-chunked PyTorch simulation script.
+* `part2_visualization.py`: The Matplotlib script used to generate the high-resolution dashboard.
+* `part2_ladder_massive.npz`: The compressed 113 MB trajectory and thermodynamic data array.
+* `massive_32k_dashboard.mp4`: A 397 MB, hardware-accelerated 4K video render of the macroscopic phase transition.
 
 ---
 
