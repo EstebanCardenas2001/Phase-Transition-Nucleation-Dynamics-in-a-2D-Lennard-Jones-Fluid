@@ -1,85 +1,79 @@
 # Phase Transition & Nucleation Dynamics in a 2D Lennard-Jones Fluid
 
-
 <div align="center">
-  <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
+  <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Preview" width="80%">
+  
+  <br><br>
+  
+  <p><b> Watch the full macroscopic 4K simulation (Phase 2):</b></p>
+  <a href="https://youtu.be/kXBRlVEVq5Y">
+    <img src="https://github.com/user-attachments/assets/66cd0fa3-4698-46c1-9743-0584b61f54bc" alt="Macroscopic 32k Simulation Phase Transition" width="80%">
+  </a>
 </div>
-<a href="https://youtu.be/kXBRlVEVq5Y">
-  <img src="https://github.com/user-attachments/assets/66cd0fa3-4698-46c1-9743-0584b61f54bc" alt="Macroscopic 32k Simulation Phase Transition" width="100%">
-</a>
+
 ---
 
-## Project Overview
+##  Project Overview
 
-This project explores the non-equilibrium thermodynamics of a 2D Lennard-Jones fluid undergoing a phase transition. By simulating a continuous cooling ladder, the system spontaneously breaks symmetry, demonstrating droplet nucleation and gas-liquid phase coexistence. 
+This repository explores the non-equilibrium thermodynamics of a two-dimensional Lennard-Jones fluid undergoing a first-order phase transition. By applying a continuous cooling ladder, the system spontaneously breaks symmetry, demonstrating droplet nucleation, gas-liquid phase coexistence, and ultimately, crystallization. 
 
-The project is structured into two distinct engineering phases: building a robust, fully vectorized local physics engine, and subsequently scaling the architecture to cloud GPUs to approach the macroscopic thermodynamic limit.
+The project is engineered in two distinct phases: 
+1. **Local Prototyping:** Developing a robust, fully vectorized custom Molecular Dynamics (MD) engine from scratch.
+2. **Cloud HPC Scaling:** Migrating the architecture to GPU-accelerated cloud infrastructure to approach the macroscopic thermodynamic limit.
 
-## Phase 1: Local Prototyping & Physics Engine
+---
 
-The first phase focuses on algorithm design and building a ground-up Molecular Dynamics (MD) engine without relying on external simulation packages (like LAMMPS). The engine was designed to maximize single-node CPU performance using matrix vectorization.
+##  Phase 1: Local Prototyping & Physics Engine
 
-*   **Interaction Potential:** Standard Lennard-Jones 12-6 potential $V(r) = 4\epsilon [(\frac{\sigma}{r})^{12} - (\frac{\sigma}{r})^6]$ with periodic boundary conditions (PBC).
-*   **Vectorized Force Matrix:** The $O(N^2)$ pairwise distance calculations are strictly vectorized through NumPy to leverage Apple Silicon's Accelerate framework, calculating tens of millions of pairwise interactions per time step.
-*   **Thermodynamics:** Uses a Velocity Verlet integrator coupled with an Andersen thermostat. The system undergoes a strict burn-in phase to thermalize the initial lattice, followed by a stepwise production cooling ladder to induce nucleation.
-*   **Order Parameter Tracking:** Calculates the local coordination number via a sparse adjacency matrix to identify connected components, allowing real-time tracking of the largest droplet fraction ($m$).
+The foundational phase focused on algorithm design and building an independent MD engine without relying on external simulation packages (e.g., LAMMPS). The architecture is optimized to maximize single-node CPU throughput using strict matrix vectorization.
 
-## The Visualization Dashboard
+* **Interaction Potential:** Standard Lennard-Jones 12-6 potential $V(r) = 4\epsilon \left[ \left(\frac{\sigma}{r}\right)^{12} - \left(\frac{\sigma}{r}\right)^6 \right]$ evaluated under periodic boundary conditions (PBC).
+* **Vectorized Force Matrix:** The $O(N^2)$ pairwise distance calculations are entirely vectorized via NumPy, leveraging hardware-accelerated linear algebra frameworks to evaluate tens of millions of interactions per integration step.
+* **Thermodynamics:** The system state is advanced using a Velocity Verlet integrator coupled with an Andersen thermostat. The protocol involves a strict burn-in phase to thermalize the initial randomized lattice, followed by a stepwise production cooling schedule to induce nucleation.
+* **Order Parameter Tracking:** Real-time structural analysis is achieved by computing the local coordination number via a sparse adjacency matrix. This allows for the identification of connected components and the extraction of the structural order parameter ($m$), defined as the largest droplet fraction.
 
-To extract physical meaning from the raw trajectory data, the project includes a custom 5-panel Matplotlib dashboard that renders the dynamics alongside real-time thermodynamic observables:
+### Analytical Visualization Dashboard
 
-| Panel | Insight |
+To extract physical meaning from the raw multidimensional trajectory data, a custom 5-panel Matplotlib diagnostic dashboard renders the structural dynamics synchronously with thermodynamic observables:
+
+| Panel | Physical Insight |
 | :--- | :--- |
-| **Global Domain** | Visualizes the entire simulation box subject to PBC. Particles are color-coded by their local coordination number. |
-| **Magnified Core** | Uses a dynamic tracking algorithm to anchor the camera to the densest cluster, providing a stable, zoomed-in view of droplet condensation. |
-| **Bimodal Density** | A real-time histogram proving phase coexistence. As the system cools, the single peak splits into a low-density gas phase and a high-density liquid phase. |
-| **Energy & Temp** | Tracks the target vs. actual temperature and the corresponding drops in potential energy as bonds form. |
-| **Order Parameter** | Plots the fraction of particles belonging to the largest single cluster, capturing the exact moment of symmetry breaking. |
-
-# Phase 2: Macroscopic Phase Transition & Nucleation Dynamics
-
-This phase scales the 2D Lennard-Jones fluid simulation to macroscopic dimensions ($N = 32,768$ particles) to observe true first-order phase transitions, latent heat extraction, and the nucleation of a polycrystalline solid. 
-
-By drastically increasing the system size, we transition from observing isolated microscopic droplet formations to simulating a massive, interconnected thermodynamic ensemble.
-
-##  Computational Physics: The GPU Force Engine
-
-Scaling the system to 32,768 particles introduces a severe $O(N^2)$ computational bottleneck. Calculating the pairwise distance matrix for periodic boundaries instantaneously requires over 14 GB of VRAM, which exceeds standard hardware limits and causes memory fragmentation.
-
-To bypass this and achieve maximum hardware saturation on an NVIDIA Tesla T4, the force engine in `part2_generate_gpu.py` was completely rewritten using a **Chunked VRAM algorithm**:
-* **Memory Optimization:** Slices the particle tensor into chunks of 1024, keeping the peak VRAM footprint safely below 3 GB.
-* **In-Place Operations:** Utilizes `.sub_()` to execute periodic boundary vector subtractions directly in memory, preventing temporary tensor bloat.
-* **100% Compute Saturation:** Feeds the CUDA cores exactly as much data as they can mathematically process per cycle, maintaining a constant 100% GPU utilization without memory overhead.
-
-## Thermodynamics & Latent Heat
-
-The simulation employs a cooling ladder over 60,000 integration steps ($10,000$ burn-in, $50,000$ production), chilling the system from a hot gas phase ($T=2.0$) down to absolute zero ($T=0.0$).
-
-* **Hexagonal Crystallization:** As the system cools, particles fall into deep Lennard-Jones potential wells, snapping into a highly ordered 2D hexagonal lattice. The local coordination density histogram proves this with a massive peak at $n=6$.
-* **Latent Heat Extraction:** The condensation process generates massive amounts of kinetic energy (heat). To prevent the system from artificially reheating, an aggressive Andersen thermostat ($\nu = 1.0$) was implemented to efficiently scrub the latent heat and force the system to follow the target temperature trajectory.
-
-##  The Polycrystalline State
-
-Instead of forming a single, perfect monocrystal, the rapid cooling schedule forces the fluid to form thousands of independent nucleation sites simultaneously. 
-
-By tracking the **Structural Order Parameter** ($m$)—defined as the fraction of the total particles residing in the largest single connected droplet—we observe that $m$ peaks at less than $5\%$. The resulting solid is a "shattered" polycrystalline state made up of distinct crystal grains with mismatched lattice alignments.
-
-##  Repository Files (Git LFS)
-
-Due to the massive scale of the data, the outputs of this simulation are tracked using **Git LFS**.
-
-* `part2_generate_gpu.py`: The CUDA-accelerated, VRAM-chunked PyTorch simulation script.
-* `part2_visualization.py`: The Matplotlib script used to generate the high-resolution dashboard.
-* `part2_ladder_massive.npz`: The compressed 113 MB trajectory and thermodynamic data array.
-* `massive_32k_dashboard.mp4`: A 397 MB, hardware-accelerated 4K video render of the macroscopic phase transition.
+| **Global Domain** | Visualizes the entire periodic simulation box. Particles are continuously color-mapped by their local coordination density. |
+| **Magnified Core** | Utilizes a dynamic bounding-box algorithm to anchor the camera to the densest cluster, tracking local droplet condensation in high resolution. |
+| **Bimodal Density** | A real-time histogram demonstrating phase coexistence. During cooling, the unified peak bifurcates into distinct low-density (gas) and high-density (liquid/solid) populations. |
+| **Energy & Temp** | Maps the actual system temperature against the target thermostat parameter, capturing the steep drops in potential energy as intermolecular bonds form. |
+| **Order Parameter** | Plots the largest contiguous cluster fraction ($m$), precisely capturing the critical moment of symmetry breaking. |
 
 ---
 
+##  Phase 2: Macroscopic Phase Transition
 
+The second phase transitions from studying isolated microscopic droplet formation to simulating a massive, interconnected thermodynamic ensemble. The system is scaled to macroscopic dimensions ($N = 32,768$ particles) to observe latent heat extraction and the nucleation of a polycrystalline solid.
 
+### Computational Physics: The GPU Force Engine
 
+Scaling to 32,768 particles introduces a severe $O(N^2)$ computational bottleneck. Storing the complete periodic distance matrix requires over 14 GB of instantaneous memory, exceeding standard hardware limits and triggering memory fragmentation. 
 
+To overcome this and achieve maximum compute saturation on NVIDIA GPU architecture, the force engine (`part2_generate_gpu.py`) was rebuilt in PyTorch using a **Chunked VRAM Algorithm**:
+* **Memory Optimization:** Slices the particle tensor into discrete evaluation chunks, constraining the peak VRAM footprint safely below 3 GB.
+* **In-Place Operations:** Executes periodic boundary vector subtractions directly in memory via `.sub_()`, eliminating temporary tensor bloat.
+* **Hardware Saturation:** Feeds the CUDA multiprocessors exactly the maximum volume of mathematical operations they can process per cycle, sustaining a continuous 100% GPU utilization rate without bottlenecking the memory bus.
 
+### Thermodynamics & Latent Heat
 
+The simulation evaluates 60,000 integration steps ($10,000$ thermalization, $50,000$ production cooling), driving the system from a high-energy gas ($T=2.0$) to a deep freeze ($T=0.0$).
 
+* **Hexagonal Crystallization:** Particles fall into deep Lennard-Jones potential wells and organize into a highly ordered 2D hexagonal lattice, confirmed by an overwhelming peak at $n=6$ in the local coordination density distribution.
+* **Latent Heat Extraction:** Rapid condensation releases immense kinetic energy. An aggressive Andersen thermostat collision frequency ($\nu = 1.0$) was required to efficiently scrub this latent heat and bind the actual temperature to the target trajectory.
+* **The Polycrystalline State:** The rapid thermal quench initiates thousands of independent nucleation sites simultaneously. The order parameter ($m$) peaks below $5\%$, indicating the formation of a "shattered" polycrystalline solid comprised of distinct, misaligned crystal grains rather than a single monocrystal.
 
+---
+
+##  Repository Structure & Git LFS
+
+Due to the massive data scale, Phase 2 outputs are version-controlled via **Git Large File Storage (LFS)**.
+
+* `part2_generate_gpu.py`: The CUDA-accelerated, chunked PyTorch force engine.
+* `part2_visualization.py`: The high-resolution Matplotlib dashboard rendering script.
+* `part2_ladder_massive.npz`: Compressed 113 MB trajectory and thermodynamic coordinate array.
+* `massive_32k_dashboard.mp4`: A 397 MB, hardware-accelerated 4K render of the macroscopic transition.
