@@ -4,7 +4,8 @@
 <div align="center">
   <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
 </div>
-
+<video src="https://github.com/EstebanCardenas2001/Phase-Transition-Nucleation-Dynamics-in-a-2D-Lennard-Jones-Fluid/blob/main/phase2_cloud/massive_32k_dashboard.mp4?raw=true" controls="controls" width="100%">
+</video>
 ---
 
 ## Project Overview
