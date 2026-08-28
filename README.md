@@ -76,6 +76,7 @@ Finite-Size Scaling (FSS) dictates that if the system belongs to this exact univ
 
 ## Results and Diagnostic Analysis
 The execution of the FSS collapse yielded a definitive negative result, providing rigorous mathematical proof of the system's underlying phase behavior at the simulated coordinates ($T_c \approx 0.335$, $\rho_c = 0.329$).
+<img width="4200" height="1800" alt="final_ising_collapse" src="https://github.com/user-attachments/assets/a91ec19d-a2b5-4b54-89d5-b5aa5ea45c1d" />
 
 *   **Finite-Size Artifacts:** The bounded $N=1024$ system exhibited a continuous peak, artificially masking the true nature of the transition because the physical domain was too small to support a complete liquid-gas interface.
 *   **Rejection of Second-Order Scaling:** The failure of the logarithmic transformation to equalize the peak heights across macroscopic domains ($N=4096$ and $N=16384$) mathematically rejects the continuous 2D Ising hypothesis for this parameter window.
