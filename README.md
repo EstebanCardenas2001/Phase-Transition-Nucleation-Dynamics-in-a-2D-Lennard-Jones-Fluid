@@ -20,9 +20,9 @@ The project has three parts:
 
 ### What changed in v2
 
-* **New O(N) GPU engine ([`lj2d/`](lj2d/)).** Cell-list Verlet neighbour lists replace the O(N²) all-pairs evaluation, and the force kernels are fused with `torch.compile`. One time step at N = 32,768 now takes {{BENCH_32K}} on a Tesla T4, against 1.19 s for the force evaluation alone in the original Phase 2 engine. Several independent replicas, for example one per temperature, run together in one batch.
+* **New O(N) GPU engine ([`lj2d/`](lj2d/)).** Cell-list Verlet neighbour lists replace the O(N²) all-pairs evaluation, and the force kernels are fused with `torch.compile`. One full time step at N = 32,768 now takes 0.86 ms on a Tesla T4, against 1.19 s for the force evaluation alone in the original Phase 2 engine, about 1,400× faster. A million particles take 9.5 ms per step. Several independent replicas, for example one per temperature, run together in one batch.
 * **Tests ([`tests/`](tests/)).** Forces, energy and virial are checked against a brute-force float64 reference to 1e-9. The suite also checks Newton's third law, energy conservation without a thermostat, Andersen thermostat temperatures and cluster detection.
-* **Phase 3 redone.** The original finite-size-scaling analysis measured a non-equilibrium drift instead of equilibrium fluctuations, and its temperature window lay below the critical point (details below). Equilibrated simulations now locate the critical point at **T<sub>c</sub> = {{TC}}**, consistent with the Gibbs-ensemble value 0.459 ± 0.001 of Smit & Frenkel (1991).
+* **Phase 3 redone.** The original finite-size-scaling analysis measured a non-equilibrium drift instead of equilibrium fluctuations, and its temperature window lay below the critical point (details below). Longer, equilibrated simulations put the critical point at **T<sub>c</sub> = 0.453 ± 0.002**, 1.3% below the Gibbs-ensemble value 0.459 ± 0.001 of Smit & Frenkel (1991). It is far above the v1 estimate of 0.335.
 * **Phase 2 re-run** with twice the particles and a slow cooling ramp through the critical and freezing regions.
 * **Dashboard fixes.** Phase 1 and Phase 2 now share one dashboard, which works with current matplotlib (the removed `cm.get_cmap` call is gone). A condensed-fraction curve is added, and frames render in parallel.
 
@@ -52,7 +52,8 @@ uv venv .venv --python 3.14 && uv pip install -p .venv -r requirements.txt   # C
 | | Original Phase 2 engine | `lj2d.LJSystem` |
 | :--- | :--- | :--- |
 | Pair search | all N² pairs, chunked | cell list → Verlet list (r<sub>c</sub> + 0.5 skin), rebuilt on displacement |
-| Cost per step, N = 32,768 (T4) | 1.19 s (forces only) | {{BENCH_32K}} |
+| Cost per step, N = 32,768 (T4) | 1.19 s (forces only) | 0.86 ms (full step) |
+| Cost per step, N = 1,048,576 (T4) | not feasible (~20 min) | 9.5 ms |
 | Potential | truncated at 2.5σ, not shifted | truncated and shifted at 2.5σ |
 | Replicas | 1 | B in one batch (e.g. one per temperature) |
 | Validation | none | 11 tests against brute force and conservation laws |
@@ -170,7 +171,34 @@ This is the same procedure Smit & Frenkel used.
 
 ### Results
 
-{{PHASE3_RESULTS}}
+Two scans, about 5.5 GPU-hours in total:
+
+| Scan | N | ρ | box side L | T values | equilibration + production steps |
+| :--- | ---: | ---: | ---: | :--- | :--- |
+| coarse | 16,384 | 0.35 | 216 | 0.40–0.56, step 0.02 | 1.0 M + 3.0 M |
+| refined | 65,536 | 0.36 | 427 | 0.43–0.49, step 0.01 | 0.6 M + 1.6 M |
+
+![Phase diagram, Binder cumulants and heat capacity](phase3/results/phase_diagram.png)
+
+| Estimate | T<sub>c</sub> | ρ<sub>c</sub> |
+| :--- | :---: | :---: |
+| This work: β = 1/8 + rectilinear-diameter fit to 5 coexistence points | **0.453 ± 0.002** | ≈ 0.37 |
+| Smit & Frenkel 1991, Gibbs ensemble, same potential | 0.459 ± 0.001 | 0.35 ± 0.01 |
+| v1 of this repository | 0.335 | 0.329 |
+
+The quoted ± 0.002 combines the fit's statistical error with the spread when each temperature is left out in turn. Numbers are in [`phase3/results/critical_point.json`](phase3/results/critical_point.json).
+
+**Coexistence curve (left panel).** At T ≤ 0.44 the sub-box densities split cleanly into a gas peak and a liquid peak. At T = 0.42 both densities agree with Smit & Frenkel within their error bars (0.043 and 0.717 here, against 0.037 ± 0.005 and 0.72 ± 0.02). Closer to T<sub>c</sub> the two peaks sit slightly inside the published densities: at T = 0.44 the gas peak is at 0.071–0.073, against 0.055 ± 0.007. A sub-box of side 18σ near an interface contains some of both phases, which pulls the peaks together. A narrower curve then extrapolates to a lower T<sub>c</sub>. This method bias most likely explains why the fit lands 0.006 below the published value, about 3 combined standard errors, and the ± 0.002 does not include it.
+
+**Binder cumulants (middle panel): inconclusive.** For a 2D-Ising critical point, the cumulant curves for different sub-box sizes should cross near T<sub>c</sub> at U\* ≈ 0.61. They do not cross in either scan. Even in the large box, with sub-boxes from 1/48 to 1/12 of the box side, U falls monotonically with sub-box size at every temperature, with error bars far smaller than the gaps between curves. Two finite-size effects remain:
+* the smallest sub-boxes hold only about 30 particles, so their density distribution is not Gaussian even well above T<sub>c</sub>;
+* below T<sub>c</sub> the larger sub-boxes often straddle interfaces.
+
+Rovere, Heermann & Binder handled this by extrapolating in sub-box size. With these sizes the method does not give a usable crossing, so no T<sub>c</sub> is quoted from it.
+
+**Heat capacity (right panel).** Where the runs are equilibrated (filled markers, T ≥ 0.46), C<sub>v</sub>/N is the same for N = 16,384 and N = 65,536 within error bars. The C<sub>v</sub> ∝ N growth in v1 disappears once the data are equilibrated. Below T<sub>c</sub>, E/N keeps drifting by up to 0.02 over the production window, because the liquid domains are still coarsening after 11,000–20,000 time units of simulation. The drift test flags these runs (hollow markers), and their C<sub>v</sub> is an overestimate for the same reason as in v1.
+
+**Conclusion.** The liquid–gas critical point of this model is at T<sub>c</sub> ≈ 0.45–0.46, ρ<sub>c</sub> ≈ 0.35–0.37, in line with the published Gibbs-ensemble result. The v1 temperature window, T = 0.30–0.38, lies about 0.1 below it, in the region where Phase 2 shows the liquid domains freezing.
 
 ---
 
