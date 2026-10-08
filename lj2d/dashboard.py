@@ -96,7 +96,10 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
     e_lo, e_hi = E[prod].min(), E[prod].max()
     e_pad = 0.1 * (e_hi - e_lo + 1e-9)
     t_hi = max(T_act[prod].max(), T_targ[prod].max())
-    m_hi = max(m[prod].max() * 1.15, 0.05)
+    # Condensed fraction: share of particles with >= 4 bonded neighbours. Unlike m,
+    # it grows even when the liquid is split over many separate domains.
+    cond = (coord >= 4).mean(1)
+    m_hi = min(1.0, max(m[prod].max(), cond[prod].max()) * 1.15 + 0.02)
     s_global = marker_size or float(np.clip(2.4e4 / N, 0.3, 8.0))
     s_zoom = s_global / zoom_frac ** 2 * 0.35
 
@@ -128,7 +131,7 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
 
     ax_hist = fig.add_subplot(gs[1, 0:2])
     ax_hist.set_xlim(-0.5, 8.5)
-    ax_hist.set_ylim(0, N * 0.7)
+    ax_hist.set_ylim(0, 1.05 * max(np.bincount(k.astype(np.int64), minlength=10)[:10].max() for k in coord[burn:]))
     ax_hist.set_xlabel("Local coordination number")
     ax_hist.set_ylabel("Particle count")
     ax_hist.set_title("Phase coexistence", fontsize=12)
@@ -151,8 +154,10 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
     ax_m.set_xlim(0, max(n_prod, 1))
     ax_m.set_ylim(0, m_hi)
     ax_m.set_xlabel("Production frame")
-    ax_m.set_ylabel("Largest cluster fraction m", color="purple")
-    ax_m.set_title("Structural order parameter", fontsize=12)
+    ax_m.set_ylabel("Fraction of particles")
+    ax_m.yaxis.set_label_position("right")
+    ax_m.yaxis.tick_right()
+    ax_m.set_title("Structural order parameters", fontsize=12)
     ax_m.grid(True, ls="--", alpha=0.6)
 
     sc = ax_sim.scatter(traj[0, :, 0], traj[0, :, 1], s=s_global, c=coord[0], cmap=cmap,
@@ -162,7 +167,9 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
     l_tt, = ax_t.plot([], [], color="black", ls="--", label="Target T")
     l_ta, = ax_t.plot([], [], color="red", alpha=0.7, label="Kinetic T")
     ax_t.legend(loc="upper right", fontsize=9)
-    l_m, = ax_m.plot([], [], color="purple", lw=1.5)
+    l_m, = ax_m.plot([], [], color="purple", lw=1.5, label="largest cluster m")
+    l_c, = ax_m.plot([], [], color="darkorange", lw=1.5, label="condensed (coord $\\geq$ 4)")
+    ax_m.legend(loc="upper left", fontsize=9)
     vlines = [ax_e.axvline(0, color="gray", ls=":"), ax_m.axvline(0, color="gray", ls=":")]
 
     def update(f):
@@ -182,7 +189,7 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
             status.set_color("tomato")
             for bar in bars:
                 bar.set_height(0)
-            for line in (l_e, l_tt, l_ta, l_m):
+            for line in (l_e, l_tt, l_ta, l_m, l_c):
                 line.set_data([], [])
             for v in vlines:
                 v.set_visible(False)
@@ -198,6 +205,7 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
             l_tt.set_data(x, T_targ[burn: f + 1])
             l_ta.set_data(x, T_act[burn: f + 1])
             l_m.set_data(x, m[burn: f + 1])
+            l_c.set_data(x, cond[burn: f + 1])
             for v in vlines:
                 v.set_visible(True)
                 v.set_xdata([p, p])

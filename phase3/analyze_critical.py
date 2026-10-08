@@ -7,11 +7,10 @@ Reads the chunks written by run_critical_scan.py and produces
      L_b; for a 2D-Ising critical point the curves cross at T_c with
      U* ~ 0.61 (subsystem-block method, Rovere, Heermann & Binder 1990),
   3. coexistence densities rho_gas / rho_liq from the two peaks of the sub-box
-     density distribution below T_c, fitted with the Ising exponent beta = 1/8
-     and the law of rectilinear diameters,
-  4. the configurational heat capacity C_v/N = N var(E/N) / T^2 with blocking
-     errors, computed from equilibrated data only,
-  5. a diagnostic of the original Phase 3 data (fss_final_N*.npz).
+     density distribution below T_c, with jackknife errors
+     (combine_scans.py fits them with beta = 1/8 and rectilinear diameters),
+  4. the configurational heat capacity C_v/N = N var(E/N) / T^2 with jackknife
+     errors, computed from equilibrated data only.
 
 Usage:
   python phase3/analyze_critical.py /tmp/lj_scan/N16384 --out phase3/results
@@ -28,12 +27,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from scipy.ndimage import gaussian_filter1d  # noqa: E402
-from scipy.optimize import curve_fit  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from lj2d import binder_cumulant, blocking_error, jackknife  # noqa: E402
 
-BETA_ISING = 1.0 / 8.0
 U_STAR_ISING = 0.6107  # critical Binder cumulant, 2D Ising, periodic square (Kamieniarz & Bloete 1993)
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,20 +56,25 @@ def crossings(T, U_small, U_large):
 
 
 # --------------------------------------------------------- coexistence peaks
-def two_peaks(counts, area, smooth_rho=0.012):
+def two_peaks(counts, area, smooth_rho=0.012, max_valley=0.6):
     """Low- and high-density maxima of the sub-box density distribution.
 
     Histogrammed on integer particle counts (density is quantised in steps of
     1/area, so arbitrary bins alias), then smoothed with a Gaussian of width
-    smooth_rho in density units.
+    smooth_rho in density units. The two outermost maxima count as coexisting
+    phases only if the minimum between them is below max_valley times the lower
+    maximum; otherwise the distribution is treated as unimodal and NaNs returned.
     """
     h = np.bincount(np.asarray(counts, dtype=np.int64).ravel()).astype(float)
     h = gaussian_filter1d(h, smooth_rho * area)
     c = np.arange(len(h)) / area
     peaks = [i for i in range(1, len(h) - 1) if h[i] >= h[i - 1] and h[i] > h[i + 1] and h[i] > 0.05 * h.max()]
     if len(peaks) < 2:
-        return None
-    return c[peaks[0]], c[peaks[-1]]
+        return np.array([np.nan, np.nan])
+    lo, hi = peaks[0], peaks[-1]
+    if h[lo:hi + 1].min() > max_valley * min(h[lo], h[hi]):
+        return np.array([np.nan, np.nan])
+    return np.array([c[lo], c[hi]])
 
 
 def main():
@@ -80,7 +82,7 @@ def main():
     ap.add_argument("scan", help="directory written by run_critical_scan.py")
     ap.add_argument("--out", default=os.path.join(HERE, "results"))
     ap.add_argument("--discard-steps", type=int, default=None, help="default: the scan's equil-steps")
-    ap.add_argument("--coex-n", type=int, default=12, help="sub-box grid used for coexistence densities")
+    ap.add_argument("--coex-Lb", type=float, default=18.0, help="target sub-box side for coexistence densities")
     ap.add_argument("--min-sub", type=int, default=4,
                     help="exclude sub-box grids coarser than this (blocks too close to the full box)")
     a = ap.parse_args()
@@ -93,8 +95,8 @@ def main():
     keep_e = d["step"] > discard
     keep_s = d["s_step"] > discard
     E = d["E"][keep_e]                   # [frames, B]
-    subdivs = sorted(int(k.split("_")[1]) for k in d if k.startswith("counts_"))
-    subdivs = [n for n in subdivs if n >= a.min_sub]
+    subdivs_all = sorted(int(k.split("_")[1]) for k in d if k.startswith("counts_"))
+    subdivs = [n for n in subdivs_all if n >= a.min_sub]
     n_frames = int(keep_s.sum())
     print(f"N={N} rho={rho} L={L:.1f}; {n_frames} configurations per T after discarding {discard} steps")
     summary = {"N": N, "rho": rho, "L": L, "temps": T.tolist(), "discard_steps": discard, "frames": n_frames}
@@ -127,29 +129,19 @@ def main():
     summary["binder_crossings"] = cross
 
     # 3. Coexistence densities -------------------------------------------------
-    nco = a.coex_n
+    # Use the sub-box grid whose side is closest to --coex-Lb, so scans with
+    # different box sizes measure peaks at the same resolution.
+    nco = min(subdivs_all, key=lambda n: abs(L / n - a.coex_Lb))
     area_co = (L / nco) ** 2
     counts_co = d[f"counts_{nco}"][keep_s]
-    rho_co = counts_co / area_co
     coex = []
     for b, t in enumerate(T):
-        pk = two_peaks(counts_co[:, b, :], area_co)
-        if pk:
-            coex.append((t, *pk))
-    coex = np.array(coex)
-    fit = None
-    if len(coex) >= 3:
-        def order(t, A, Tc):
-            return A * np.clip(Tc - t, 0, None) ** BETA_ISING
-        try:
-            (A, Tc_fit), cov = curve_fit(order, coex[:, 0], coex[:, 2] - coex[:, 1], p0=(1.0, T.max()))
-            diam = 0.5 * (coex[:, 1] + coex[:, 2])
-            slope, rho_c = np.polyfit(coex[:, 0] - Tc_fit, diam, 1)
-            fit = {"Tc": Tc_fit, "Tc_err": float(np.sqrt(cov[1, 1])), "A": A, "rho_c": rho_c, "diam_slope": slope}
-        except RuntimeError:
-            fit = None
+        pk, err = jackknife(lambda x: two_peaks(x, area_co), counts_co[:, b, :], n_blocks=10)
+        if np.all(np.isfinite(pk)) and np.all(np.isfinite(err)):
+            coex.append((t, pk[0], err[0], pk[1], err[1]))
+    coex = np.array(coex).reshape(-1, 5)   # T, rho_gas, err, rho_liq, err
+    summary["coex_Lb"] = L / nco
     summary["coexistence"] = coex.tolist()
-    summary["coexistence_fit_beta_1_8"] = fit
 
     # 4. Heat capacity ---------------------------------------------------------
     cv = []
@@ -188,26 +180,18 @@ def main():
         h = np.bincount(counts_co[:, b, :].ravel()).astype(float)
         h = gaussian_filter1d(h / h.sum() * area_co, 0.006 * area_co)
         ax[0, 1].plot(np.arange(len(h)) / area_co, h, lw=1.6, color=col, label=f"T = {T[b]:.2f}")
-    ax[0, 1].set_xlabel(r"sub-box density $\rho_b$" + f"  ($L_b$ = {L / nco:.1f})")
+    ax[0, 1].set_xlabel(r"sub-box density $\rho_b$" + f"  (sub-box side {L / nco:.1f})")
     ax[0, 1].set_ylabel(r"$P(\rho_b)$")
     ax[0, 1].set_title("Sub-box density distribution")
     ax[0, 1].legend(fontsize=8)
     ax[0, 1].grid(alpha=0.4)
 
     if len(coex):
-        ax[1, 0].plot(coex[:, 1], coex[:, 0], "bo", label=r"$\rho_{gas}$")
-        ax[1, 0].plot(coex[:, 2], coex[:, 0], "ro", label=r"$\rho_{liq}$")
-        if fit:
-            tt = np.linspace(coex[:, 0].min(), fit["Tc"], 200)
-            half = 0.5 * fit["A"] * (fit["Tc"] - tt) ** BETA_ISING
-            mid = fit["rho_c"] + fit["diam_slope"] * (tt - fit["Tc"])
-            ax[1, 0].plot(mid - half, tt, "k-", lw=1)
-            ax[1, 0].plot(mid + half, tt, "k-", lw=1, label=r"fit, $\beta = 1/8$")
-            ax[1, 0].plot(fit["rho_c"], fit["Tc"], "k*", ms=14,
-                          label=f"$T_c$={fit['Tc']:.3f}, $\\rho_c$={fit['rho_c']:.3f}")
+        ax[1, 0].errorbar(coex[:, 1], coex[:, 0], xerr=coex[:, 2], fmt="bo", capsize=3, label=r"$\rho_{gas}$")
+        ax[1, 0].errorbar(coex[:, 3], coex[:, 0], xerr=coex[:, 4], fmt="ro", capsize=3, label=r"$\rho_{liq}$")
     ax[1, 0].set_xlabel(r"$\rho$")
     ax[1, 0].set_ylabel("T")
-    ax[1, 0].set_title("Coexistence curve from sub-box density peaks")
+    ax[1, 0].set_title(f"Coexistence densities (sub-box side {L / nco:.1f})")
     ax[1, 0].legend(fontsize=8)
     ax[1, 0].grid(alpha=0.4)
 
@@ -236,7 +220,7 @@ def main():
     fig.savefig(os.path.join(a.out, "equilibration.png"), dpi=150)
     plt.close(fig)
 
-    print(json.dumps({"binder_crossings": cross, "coexistence_fit": fit,
+    print(json.dumps({"binder_crossings": cross, "coexistence [T, rg, err, rl, err]": coex.round(4).tolist(),
                       "max_|drift|/err": float(np.max(np.abs(drift) / drift_err))}, indent=2, default=float))
 
 
