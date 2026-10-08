@@ -2,7 +2,7 @@
 
 Expected keys: traj [F, N, 2], T_act, T_targ, E, m [F], coord [F, N], L, N, burn_in_frames.
 
-Panels: global box, magnified view that tracks the densest region, coordination
+Panels: global box, magnified view of the box centre (optionally tracking the densest region), coordination
 histogram, energy + temperature traces, and the largest-cluster order parameter.
 """
 
@@ -48,7 +48,7 @@ def dense_region_track(traj, coord, L, n_grid=64, min_coord=4, smooth=0.15):
 
 
 def render(npz_path, out_path, zoom_frac=1 / 4, skip=1, fps=30, dpi=200, figsize=(18, 12),
-           marker_size=None, max_frames=None, track=True, workers=1):
+           marker_size=None, max_frames=None, track=False, workers=1):
     """Render the dashboard. With workers > 1 (mp4 only) frame ranges are drawn in
     parallel processes and joined losslessly with ffmpeg's concat demuxer."""
     kw = dict(zoom_frac=zoom_frac, skip=skip, fps=fps, dpi=dpi, figsize=figsize,
@@ -176,7 +176,7 @@ def _render_range(npz_path, out_path, frame_range, zoom_frac, skip, fps, dpi, fi
         pos, k, c = traj[f], coord[f], centres[f]
         sc.set_offsets(pos)
         sc.set_array(k)
-        # Zoom: shift so the tracked centre sits at the origin, wrapping periodically.
+        # Zoom: shift so the window centre sits at the origin, wrapping periodically.
         rel = pos - c
         rel -= L * np.round(rel / L)
         inside = (np.abs(rel) < zoom_w / 2 + 1.0).all(1)
@@ -231,12 +231,12 @@ def main():
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--width", type=float, default=18, help="figure width in inches (height = 2/3)")
     ap.add_argument("--max-frames", type=int, default=None)
-    ap.add_argument("--no-track", action="store_true", help="keep the zoom window fixed at the box centre")
+    ap.add_argument("--track", action="store_true", help="move the zoom window to follow the densest region (default: fixed at the box centre)")
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 2),
                     help="parallel render processes (mp4 only)")
     a = ap.parse_args()
     render(a.npz, a.out, zoom_frac=a.zoom_frac, skip=a.skip, fps=a.fps, dpi=a.dpi,
-           figsize=(a.width, a.width * 2 / 3), max_frames=a.max_frames, track=not a.no_track,
+           figsize=(a.width, a.width * 2 / 3), max_frames=a.max_frames, track=a.track,
            workers=a.workers)
 
 
