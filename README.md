@@ -1,87 +1,217 @@
 # Phase Transition & Nucleation Dynamics in a 2D Lennard-Jones Fluid
 
 <div align="center">
-  <img src="dashboard_preview.gif" alt="MD Phase Transition Simulation" width="100%">
-=======
-  <img src="outputs/dashboard_preview.gif" alt="MD Phase Transition Preview" width="80%">
-  
-  <br><br>
-  
-  <p><b> Watch the full macroscopic 4K simulation (Phase 2):</b></p>
-  <a href="https://youtu.be/kXBRlVEVq5Y">
-    <img src="https://github.com/user-attachments/assets/66cd0fa3-4698-46c1-9743-0584b61f54bc" alt="Macroscopic 32k Simulation Phase Transition" width="80%">
-  </a>
+  <img src="outputs/quench_preview.gif" alt="Cooling quench of a 65,536-particle 2D Lennard-Jones fluid" width="90%">
+  <p><i>N = 65,536 particles cooled from T = 1.0 to 0.30: homogeneous gas, liquid domains below T<sub>c</sub>, then freezing into hexagonal crystallites.
+  Full video: <a href="outputs/quench_dashboard_1080p.mp4">outputs/quench_dashboard_1080p.mp4</a></i></p>
 </div>
 
 ---
 
-##  Project Overview
+## Project overview
 
-This repository explores the non-equilibrium thermodynamics of a two-dimensional Lennard-Jones fluid undergoing a first-order phase transition. By applying a continuous cooling ladder, the system spontaneously breaks symmetry, demonstrating droplet nucleation, gas-liquid phase coexistence, and ultimately, crystallization. 
+A from-scratch molecular dynamics study of the two-dimensional Lennard-Jones (LJ) fluid: how a homogeneous gas condenses and freezes under cooling, and where its liquid-gas critical point lies. All quantities are in reduced LJ units (σ = ε = m = k<sub>B</sub> = 1).
 
-The project is engineered in two distinct phases: 
-1. **Local Prototyping:** Developing a robust, fully vectorized custom Molecular Dynamics (MD) engine from scratch.
-2. **Cloud HPC Scaling:** Migrating the architecture to GPU-accelerated cloud infrastructure to approach the macroscopic thermodynamic limit.
+The project has three parts:
+
+1. **Phase 1, local prototype:** a fully vectorized NumPy engine (all-pairs forces) and the diagnostic dashboard.
+2. **Phase 2, large-N quench:** condensation and freezing of a 65,536-particle system on the GPU.
+3. **Phase 3, critical point:** equilibrium simulations that locate the liquid-gas critical point and compare it with published results.
+
+### What changed in v2
+
+* **New O(N) GPU engine ([`lj2d/`](lj2d/)).** Cell-list Verlet neighbour lists replace the O(N²) all-pairs evaluation, and the force kernels are fused with `torch.compile`. One time step at N = 32,768 now takes {{BENCH_32K}} on a Tesla T4, against 1.19 s for the force evaluation alone in the original Phase 2 engine. Several independent replicas, for example one per temperature, run together in one batch.
+* **Tests ([`tests/`](tests/)).** Forces, energy and virial are checked against a brute-force float64 reference to 1e-9. The suite also checks Newton's third law, energy conservation without a thermostat, Andersen thermostat temperatures and cluster detection.
+* **Phase 3 redone.** The original finite-size-scaling analysis measured a non-equilibrium drift instead of equilibrium fluctuations, and its temperature window lay below the critical point (details below). Equilibrated simulations now locate the critical point at **T<sub>c</sub> = {{TC}}**, consistent with the Gibbs-ensemble value 0.459 ± 0.001 of Smit & Frenkel (1991).
+* **Phase 2 re-run** with twice the particles and a slow cooling ramp through the critical and freezing regions.
+* **Dashboard fixes.** Phase 1 and Phase 2 now share one dashboard, which works with current matplotlib (the removed `cm.get_cmap` call is gone). A condensed-fraction curve is added, and frames render in parallel.
 
 ---
 
-##  Phase 1: Local Prototyping & Physics Engine
+## Quick start
 
-The foundational phase focused on algorithm design and building an independent MD engine without relying on external simulation packages (e.g., LAMMPS). The architecture is optimized to maximize single-node CPU throughput using strict matrix vectorization.
+```bash
+uv venv .venv --python 3.14 && uv pip install -p .venv -r requirements.txt   # CUDA wheels: add the PyTorch index URL
+.venv/bin/python -m pytest                                                     # 11 tests, CPU + GPU
 
-* **Interaction Potential:** Standard Lennard-Jones 12-6 potential $V(r) = 4\epsilon \left[ \left(\frac{\sigma}{r}\right)^{12} - \left(\frac{\sigma}{r}\right)^6 \right]$ evaluated under periodic boundary conditions (PBC).
-* **Vectorized Force Matrix:** The $O(N^2)$ pairwise distance calculations are entirely vectorized via NumPy, leveraging hardware-accelerated linear algebra frameworks to evaluate tens of millions of interactions per integration step.
-* **Thermodynamics:** The system state is advanced using a Velocity Verlet integrator coupled with an Andersen thermostat. The protocol involves a strict burn-in phase to thermalize the initial randomized lattice, followed by a stepwise production cooling schedule to induce nucleation.
-* **Order Parameter Tracking:** Real-time structural analysis is achieved by computing the local coordination number via a sparse adjacency matrix. This allows for the identification of connected components and the extraction of the structural order parameter ($m$), defined as the largest droplet fraction.
+# Phase 2: quench (~2 h on a T4 for N = 65,536), then render the dashboard
+.venv/bin/python phase2_cloud/part2_generation_gpu.py --N 65536 --out /tmp/part2_quench.npz
+.venv/bin/python phase2_cloud/part2_visualization.py --npz /tmp/part2_quench.npz --out quench.mp4
 
-### Analytical Visualization Dashboard
+# Phase 3: temperature scan (resumable), per-scan analysis, combined phase diagram
+.venv/bin/python phase3/run_critical_scan.py --N 16384 --rho 0.35 --temps 0.40:0.56:9 \
+    --equil-steps 1000000 --prod-steps 3000000 --sample-every 1000 --out /tmp/lj_scan/N16384
+.venv/bin/python phase3/analyze_critical.py /tmp/lj_scan/N16384 --out phase3/results/N16384
+.venv/bin/python phase3/combine_scans.py phase3/results/N16384 phase3/results/N65536
+```
 
-To extract physical meaning from the raw multidimensional trajectory data, a custom 5-panel Matplotlib diagnostic dashboard renders the structural dynamics synchronously with thermodynamic observables:
+---
 
-| Panel | Physical Insight |
+## The engine
+
+| | Original Phase 2 engine | `lj2d.LJSystem` |
+| :--- | :--- | :--- |
+| Pair search | all N² pairs, chunked | cell list → Verlet list (r<sub>c</sub> + 0.5 skin), rebuilt on displacement |
+| Cost per step, N = 32,768 (T4) | 1.19 s (forces only) | {{BENCH_32K}} |
+| Potential | truncated at 2.5σ, not shifted | truncated and shifted at 2.5σ |
+| Replicas | 1 | B in one batch (e.g. one per temperature) |
+| Validation | none | 11 tests against brute force and conservation laws |
+
+Integration uses velocity Verlet with an Andersen thermostat, so the runs sample the canonical (NVT) ensemble. Shifting the potential changes only the energy bookkeeping: forces, and therefore the dynamics and phase behaviour, are the same as for the truncated potential. With the shift, the total energy is continuous at the cutoff, which makes the energy-conservation test meaningful. This is the same model as the "truncated and shifted" potential in Smit & Frenkel (1991).
+
+### Why it is fast
+
+The speed-up comes mostly from doing far less work, and partly from doing that work more efficiently on the GPU. All timings below are on a Tesla T4 in float32.
+
+**1. Only nearby pairs are evaluated (algorithmic, ~1,500× fewer pairs).**
+The LJ force is cut off at r<sub>c</sub> = 2.5σ, so a particle interacts with only 15–22 neighbours at these densities, yet the original engine computed all N² separations. At N = 32,768 that is 1.07 × 10⁹ distances per step, against about N × 18 ≈ 6 × 10⁵ with a neighbour list. The list is built in two stages:
+* **Cell list.** The box is cut into square cells at least r<sub>c</sub> + skin wide. Particles are sorted by cell into a padded table, so each particle's candidates are the occupants of its own cell and the 8 surrounding cells. This step costs O(N) and needs no loops in Python.
+* **Verlet list.** From those candidates, every pair within r<sub>c</sub> + skin (skin = 0.5σ) is stored in a padded `[N, K]` index array. The list stays valid until some particle has moved more than skin/2, so it is rebuilt only about once every 10–11 steps (88 rebuilds per 1,000 steps in the Phase 3 runs). The other steps reuse it.
+
+**2. The force calculation reads memory once (`torch.compile`, 7× on forces).**
+Written in plain PyTorch, each line of the force calculation (separations, minimum image, r², masks, r⁻⁶, force, energy, virial) allocates a full `[N, K]` temporary and reads it back. That makes the calculation memory-bound. `torch.compile` fuses the whole kernel into a few Triton kernels that keep these values in registers. The same fusion is applied to the candidate filter in the list rebuild.
+
+**3. The list rebuild avoids sorting.**
+The first version packed each particle's neighbours into its row with an `argsort`, and a second attempt used a row-wise cumulative sum; both were slow on the GPU. The final version takes `nonzero()` of the hit mask, which is already in row order, and computes each hit's slot from a 1D cumulative sum of the per-row counts.
+
+**4. Many independent systems run in one batch.**
+Small systems are limited by the fixed cost of launching GPU kernels, not by arithmetic. `LJSystem` advances B replicas at once by giving every particle a global index b·N + i and giving every replica its own block of cells, so one set of kernels serves all replicas. Sixteen 1,024-particle systems take 1.06 ms per step together (about 15,000 replica-steps per second). This is how each Phase 3 scan runs all of its temperatures (7–9) in one process.
+
+**5. Smaller choices**
+* *Full neighbour list, gather only.* Each pair is stored from both sides, so every particle sums its own forces and no two GPU threads write to the same particle. That avoids atomic adds and makes results deterministic, at the cost of evaluating each pair twice.
+* *float32.* The T4's float64 throughput is 1/32 of its float32 throughput. Positions in a box of side 470 keep about 3 × 10⁻⁵σ resolution, far below any physical length in the problem, and the brute-force tests confirm the forces.
+* *Truncated potential with a cutoff.* This bounds K and is the potential the reference data uses.
+
+**Measured effect of steps 2 and 3**, on the Phase 3 workload (9 replicas × 16,384 particles = 147,456 particles):
+
+| | before | after | speed-up |
+| :--- | ---: | ---: | ---: |
+| force calculation | 4.37 ms | 0.60 ms | 7.3× |
+| neighbour-list rebuild (every ~10 steps) | 16.4 ms | 5.0 ms | 3.3× |
+| **full time step** (rebuild cost averaged in) | **6.47 ms** | **1.54 ms** | **4.2×** |
+
+**Rendering** was made faster separately. The dashboard splits the frames across worker processes and joins the pieces with ffmpeg's concat demuxer, without re-encoding, which is about 7× faster on 12 cores. The 4K Phase 2 video (1,201 frames at 3600 × 2400) renders in about 3 minutes.
+
+---
+
+## Phase 1: local prototype
+
+The foundational engine in [`phase1_local/`](phase1_local/) uses NumPy with no external MD package:
+
+* **Potential:** the full LJ 12-6 interaction under periodic boundary conditions, with all N² pairs vectorized.
+* **Integration:** velocity Verlet with an Andersen thermostat, a burn-in at T = 0.60, then a stepwise cooling ladder down to T = 0.35 (N = 4,000, ρ = 0.3).
+* **Structure:** coordination numbers within 1.5σ and connected-component clusters; the largest-cluster fraction is *m*.
+
+### Diagnostic dashboard
+
+[`lj2d/dashboard.py`](lj2d/dashboard.py) renders any trajectory as a five-panel video:
+
+| Panel | Shows |
 | :--- | :--- |
-| **Global Domain** | Visualizes the entire periodic simulation box. Particles are continuously color-mapped by their local coordination density. |
-| **Magnified Core** | Utilizes a dynamic bounding-box algorithm to anchor the camera to the densest cluster, tracking local droplet condensation in high resolution. |
-| **Bimodal Density** | A real-time histogram demonstrating phase coexistence. During cooling, the unified peak bifurcates into distinct low-density (gas) and high-density (liquid/solid) populations. |
-| **Energy & Temp** | Maps the actual system temperature against the target thermostat parameter, capturing the steep drops in potential energy as intermolecular bonds form. |
-| **Order Parameter** | Plots the largest contiguous cluster fraction ($m$), precisely capturing the critical moment of symmetry breaking. |
+| **Global domain** | The whole periodic box, with particles coloured by coordination number. |
+| **Magnified view** | A fixed window at the centre of the box, outlined in the global view. `--track` instead makes it follow the densest region. |
+| **Phase coexistence** | Histogram of coordination numbers; a gas population and a condensed population separate as the system cools. |
+| **Energy & temperature** | Potential energy per particle, kinetic temperature and thermostat target. |
+| **Order parameters** | The largest-cluster fraction *m* and the condensed fraction (coordination ≥ 4). |
 
-## Phase 2: Macroscopic Quench and Phase Coexistence
-This phase scales the custom PyTorch molecular dynamics engine to a macroscopic domain ($N=32,768$ particles) to simulate large-scale non-equilibrium phase separation. By leveraging GPU tensor operations and VRAM chunking on the CloudVeneto infrastructure, the engine successfully computed over a billion pairwise interactions per integration step.
+The condensed fraction was added because *m* can stay small even when most particles have condensed: a quench produces many separate domains, and *m* only counts the largest one.
 
-## Thermodynamic Quench Dynamics
-The system was subjected to a rapid quench using a vectorized Andersen thermostat, driving the fluid out of a homogeneous gas state and deep into the liquid-gas coexistence region.
-
-*   **Supercooling and Thermal Lag:** Because the thermal quench was highly dynamic, the system experienced significant supercooling. It maintained a metastable gaseous state well below the equilibrium boundary, only breaking symmetry when the temperature reached $T \approx 0.30$.
-*   **Symmetry Breaking and Nucleation:** The exact moment of condensation was captured quantitatively. A sudden, sharp spike in the macroscopic structural order parameter precisely tracked the spontaneous formation of structured liquid clusters.
-*   **Latent Heat Release:** The nucleation event triggered a massive release of latent heat, which was mathematically recorded as a steep, violent drop in the potential energy time-series. 
-*   **Domain Formation:** Spatial mapping of the coordinates visually confirmed the phase separation, revealing dense, highly coordinated liquid droplets suspended within a dilute vapor background, perfectly illustrating the binodal coexistence regime.
 ---
 
-## Phase 3: Critical Point Isolation and Finite-Size Scaling
-This phase investigates the thermodynamic limits of the 2D Lennard-Jones fluid, attempting to isolate the liquid-gas critical point and map its universality class. Using a custom batched PyTorch tensor architecture, the system was simulated across multiple finite box sizes ($N \in \{1024, 4096, 16384\}$) to extract macroscopic critical exponents.
+## Phase 2: large-N cooling quench
 
-## Mathematical Framework
-To test the hypothesis that the critical point belongs to the 2D Ising universality class, we analyze the specific heat capacity at constant volume, $C_v$. In the canonical (NVT) ensemble, $C_v$ is derived from the variance of the potential energy $E$:
+[`phase2_cloud/part2_generation_gpu.py`](phase2_cloud/part2_generation_gpu.py) simulates N = 65,536 particles at ρ = 0.3 (box side L = 467). After a burn-in at T = 1.0, the temperature ramps linearly to T = 0.30 over 2 × 10⁶ steps (t = 10⁴ in LJ time) and then holds there. The run took 2 h on a T4.
 
-$$C_v = \frac{N(\langle E^2 \rangle - \langle E \rangle^2)}{T^2}$$
+The original run cooled from T = 2.0 to 0 in 5 × 10⁴ steps, so most of it was spent in the supercritical gas and the rest was effectively an instant quench. The slower ramp gives time for the system to pass through the transitions:
 
-For the 2D Ising model, the critical exponent $\alpha = 0$, dictating that the specific heat diverges logarithmically with the physical box length $L$:
+| T | condensed fraction (coord ≥ 4) | 6-coordinated fraction | what happens |
+| :---: | :---: | :---: | :--- |
+| 0.60 | 0.26 | — | supercritical fluid with transient dense clusters |
+| 0.50 | 0.42 | 0.04 | large density fluctuations as T approaches T<sub>c</sub> |
+| 0.45 | 0.58 | 0.10 | below T<sub>c</sub>: liquid domains separate from the vapour |
+| 0.40 | 0.76 | 0.25 | domains coarsen |
+| 0.36 | 0.87 | 0.53 | steepest energy drop (dE/dT is largest at T ≈ 0.365): liquid domains freeze |
+| 0.30 | 0.93 | 0.78 | hexagonal crystallites in a dilute vapour, still coarsening |
 
-$$C_v \propto \ln(L)$$
+The largest single energy release does not come from condensation, which is spread over the whole range below T<sub>c</sub>. It comes from **freezing**, between T ≈ 0.40 and 0.34, where the fraction of particles with exactly six neighbours (the hexagonal-crystal signature) rises from 25% to 68%. The exact freezing temperature depends on the cooling rate, and this run does not measure it separately.
 
-Finite-Size Scaling (FSS) dictates that if the system belongs to this exact universality class, plotting the scaled specific heat against the scaled temperature will collapse all discrete system sizes onto a universal master curve:
-*   **Scaled Temperature:** $(T - T_c)L^{1/\nu}$ (where $\nu = 1$)
-*   **Scaled Specific Heat:** $\frac{C_v}{\ln(L)}$
+The 4K master render (3600 × 2400, 1,201 frames) was produced with `--workers 10`. The repository holds a 1080p copy in [`outputs/`](outputs/). The video of the original v1 run (N = 32,768, fast 2.0 → 0 ramp) is on [YouTube](https://youtu.be/kXBRlVEVq5Y).
 
-## Results and Diagnostic Analysis
-The execution of the FSS collapse yielded a definitive negative result, providing rigorous mathematical proof of the system's underlying phase behavior at the simulated coordinates ($T_c \approx 0.335$, $\rho_c = 0.329$).
-<img width="4200" height="1800" alt="final_ising_collapse" src="https://github.com/user-attachments/assets/a91ec19d-a2b5-4b54-89d5-b5aa5ea45c1d" />
-
-*   **Finite-Size Artifacts:** The bounded $N=1024$ system exhibited a continuous peak, artificially masking the true nature of the transition because the physical domain was too small to support a complete liquid-gas interface.
-*   **Rejection of Second-Order Scaling:** The failure of the logarithmic transformation to equalize the peak heights across macroscopic domains ($N=4096$ and $N=16384$) mathematically rejects the continuous 2D Ising hypothesis for this parameter window.
-*   **Proof of First-Order Coexistence:** The specific heat variance was observed to scale linearly with the system area ($L^2$). This volumetric scaling is the absolute thermodynamic signature of latent heat release.
-*   **Conclusion:** The simulation successfully bypassed the critical point and drove directly through the binodal coexistence line, resulting in a first-order phase transition characterized by macroscopic droplet nucleation.
-=======
 ---
 
+## Phase 3: locating the critical point
+
+### Why the original analysis was revised
+
+The original Phase 3 simulated N = 1,024, 4,096 and 16,384 particles at T = 0.30–0.38. It computed C<sub>v</sub> = N var(E/N)/T² and interpreted the resulting C<sub>v</sub> ∝ N as proof of a first-order transition. Two problems undo that conclusion:
+
+1. **The systems were not equilibrated.** Throughout every measurement window, E/N fell by about 0.12, by the same amount for every N. The total spread of E/N (≈ 0.05) is therefore set by this drift, not by fluctuations. Multiplying an N-independent drift by N gives C<sub>v</sub> ∝ N automatically, whatever the order of the transition. The short-time fluctuations behave exactly as equilibrium fluctuations should, falling as N<sup>−1/2</sup> (0.0048 → 0.0024 → 0.0012).
+2. **The temperature window lies below the critical point.** The reported T<sub>c</sub> ≈ 0.335 is far below the published value for this potential, T<sub>c</sub> = 0.459 (Smit & Frenkel 1991). T = 0.30–0.38 is in the region where liquid and solid domains form, not near the critical point. Phase 2 above shows freezing at about T ≈ 0.36.
+
+![Diagnostic of the original Phase 3 data](phase3/results/original_fss_diagnostic.png)
+
+*Left: E/N during the original measurement window keeps falling. Right: the spread used for C<sub>v</sub> (circles) barely changes with N, while the short-time fluctuations (squares) follow the equilibrium N<sup>−1/2</sup> law.* Reproduce with [`phase3/diagnose_original_fss.py`](phase3/diagnose_original_fss.py). The original script and figure are kept in [`phase3/`](phase3/) for reference.
+
+### Method
+
+[`phase3/run_critical_scan.py`](phase3/run_critical_scan.py) simulates one replica per temperature in a single batch. Each scan first runs 0.6–1 × 10⁶ equilibration steps that are discarded, then 1.6–3 × 10⁶ production steps. From each saved configuration, [`phase3/analyze_critical.py`](phase3/analyze_critical.py) computes:
+
+* **Equilibration check:** the mean E/N in the first and last quarter of production, with blocking errors.
+* **Sub-box densities:** the box is divided into n × n sub-boxes of side L<sub>b</sub>, and each sub-box's density is recorded (the subsystem-block method of Rovere, Heermann & Binder 1990). Below T<sub>c</sub>, their distribution has two peaks, at the gas and liquid densities.
+* **Coexistence densities:** the two peak positions at L<sub>b</sub> ≈ 18, with jackknife errors.
+* **Binder cumulants:** U = 1 − ⟨δρ⁴⟩/(3⟨δρ²⟩²) for each sub-box size.
+* **Heat capacity:** C<sub>v</sub>/N, from equilibrated data only.
+
+[`phase3/combine_scans.py`](phase3/combine_scans.py) fits the coexistence densities with the 2D Ising order-parameter exponent and the law of rectilinear diameters:
+
+$$\rho_l - \rho_g = A\,(T_c - T)^{1/8}, \qquad \tfrac{1}{2}(\rho_l + \rho_g) = \rho_c + D\,(T - T_c)$$
+
+This is the same procedure Smit & Frenkel used.
+
+### Results
+
+{{PHASE3_RESULTS}}
+
+---
+
+## Future directions
+
+The engine now handles 10⁵–10⁶ particles and millions of steps on a single T4, which opens up questions the original O(N²) code could not reach. Roughly in order of how much they build on what exists:
+
+### Physics
+
+1. **Nucleation rates and classical nucleation theory.** The project is named after nucleation, but a slow ramp mostly shows gradual condensation. A cleaner experiment: quench instantly to fixed temperatures inside the coexistence region and record the waiting time until the first stable droplet appears, over many replicas (batching makes 50–100 replicas cheap). This gives nucleation rates as a function of supersaturation, which can be compared with 2D classical nucleation theory. In 2D a droplet's barrier scales as γ²/Δμ, where γ is the line tension and Δμ the chemical-potential difference. For deep quenches with rare events, forward-flux sampling or seeding methods would be needed.
+2. **Nucleation versus spinodal decomposition.** Quench to a grid of (ρ, T) points and map where droplets nucleate one at a time and where the whole box separates at once. Then measure how domains grow, L(t) ∝ t<sup>α</sup>, from the structure factor S(k, t). With the Andersen thermostat the dynamics are diffusive, giving α = 1/3 (Lifshitz–Slyozov). Swapping in a momentum-conserving thermostat (DPD, or Langevin with weak friction) brings in hydrodynamics, which in 2D predicts faster growth, α = 1/2 or 2/3. This is a clear experiment on how dynamics affect phase separation.
+3. **Two-dimensional melting (KTHNY).** 2D solids are predicted to melt through an intermediate *hexatic* phase. The engine can reach the system sizes needed, 10⁵–10⁶ particles. Measuring the bond-orientational order ψ₆ and its spatial correlations across the freezing seen in Phase 2 would test whether the LJ system melts in two steps or one.
+4. **The full phase diagram.** Add the solid branch and the triple point, and replace the sub-box estimate of the critical point with grand-canonical Monte Carlo plus histogram reweighting, the standard way to do finite-size scaling for fluids. The line tension γ(T) can be measured from the capillary-wave spectrum of a flat liquid–vapour interface; it should vanish as (T<sub>c</sub> − T)<sup>ν</sup> with the 2D Ising ν = 1.
+5. **Effect of the cutoff.** Smit & Frenkel found T<sub>c</sub> = 0.459 for the potential cut at 2.5σ and 0.515 for the full potential. Rerunning the scans at several cutoffs would show directly how much of the phase diagram is set by the weak long-range attraction.
+6. **Other systems on the same engine.** Binary mixtures (a 2D Kob–Andersen glass former), active Brownian particles (motility-induced phase separation), or anisotropic "patchy" particles. Each changes only the pair kernel and the integrator.
+
+### Engineering
+
+* **CUDA graphs**, or compiling the whole time step, to remove the remaining Python and kernel-launch overhead, which is now a large share of each 1.5 ms step.
+* **A custom Triton or CUDA kernel** for the neighbour-list build, and a half list (each pair stored once, forces added with atomics) to halve the pair work.
+* **Multi-GPU** domain decomposition for 10⁷ particles, and checkpoint/resume in the Phase 2 generator, which Phase 3 already has.
+* **Continuous integration** with GitHub Actions running the CPU tests, and packaging `lj2d` as an installable module.
+* **Machine learning:** train a graph neural network on the neighbour graphs to identify liquid-like, solid-like and interface particles, or to predict which early clusters go on to become stable nuclei.
+
+---
+
+## Repository layout
+
+```
+lj2d/                    engine (engine.py), analysis helpers, dashboard renderer
+tests/                   pytest suite for the engine and analysis
+phase1_local/            NumPy prototype engine, data, dashboard wrapper
+phase2_cloud/            GPU quench generator and dashboard wrapper
+phase3/                  scan generator, per-scan analysis, combination, diagnostics
+phase3/results/          summaries (JSON/NPZ) and figures committed with the code
+outputs/                 videos and preview GIFs
+```
+
+Raw scan data (tens to hundreds of MB per scan) is not committed. Regenerate it with the commands above.
+
+## References
+
+* B. Smit and D. Frenkel, *Vapor–liquid equilibria of the two-dimensional Lennard-Jones fluid(s)*, J. Chem. Phys. **94**, 5663 (1991). [doi:10.1063/1.460477](https://doi.org/10.1063/1.460477)
+* M. Rovere, D. W. Heermann and K. Binder, *The gas–liquid transition of the two-dimensional Lennard-Jones fluid*, J. Phys.: Condens. Matter **2**, 7009 (1990). [doi:10.1088/0953-8984/2/33/013](https://doi.org/10.1088/0953-8984/2/33/013)
