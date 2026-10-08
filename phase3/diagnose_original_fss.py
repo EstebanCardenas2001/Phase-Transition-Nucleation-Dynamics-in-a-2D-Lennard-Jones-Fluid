@@ -1,6 +1,6 @@
 """Diagnostic of the original Phase 3 finite-size-scaling data (fss_final_N*.npz).
 
-The original analysis (data_colapse.py) computed C_v = N var(E/N) / T^2 and
+The original analysis (v1_original/data_colapse.py) computed C_v = N var(E/N) / T^2 and
 read C_v ~ N as the signature of a first-order transition. This script shows
 that the variance is dominated by a slow downward drift of E/N during the
 measurement window, i.e. the systems were still condensing:
@@ -27,7 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def main():
     sizes = [1024, 4096, 16384]
-    data = {n: np.load(os.path.join(HERE, f"fss_final_N{n}.npz")) for n in sizes}
+    data = {n: np.load(os.path.join(HERE, "v1_original", f"fss_final_N{n}.npz")) for n in sizes}
     T = data[sizes[0]]["T_target"]
     k = int(np.argmin(np.abs(T - 0.335)))
 

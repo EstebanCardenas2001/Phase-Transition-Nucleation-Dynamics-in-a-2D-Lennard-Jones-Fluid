@@ -146,13 +146,19 @@ def main():
     ax[1].legend(fontsize=8)
     ax[1].grid(alpha=0.4)
 
-    for s, mk in zip(scans, ["o", "^", "s"]):
-        ax[2].errorbar(s["temps"], s["Cv_per_particle"], s["Cv_err"], marker=mk, capsize=3,
-                       label=f"N={s['N']:,}, $\\rho$={s['rho']}")
+    # Where E/N still drifts (> 3 sigma between first and last quarter of production),
+    # the variance includes the drift, so C_v there is an overestimate: draw hollow.
+    for s, mk, col in zip(scans, ["o", "^", "s"], ["tab:blue", "tab:orange", "tab:green"]):
+        t, cv, ce = (np.array(s[k]) for k in ("temps", "Cv_per_particle", "Cv_err"))
+        drifting = np.abs(s["E_drift_first_to_last_quarter"]) > 3 * np.array(s["E_drift_err"])
+        ax[2].errorbar(t, cv, ce, color=col, marker="none", capsize=3, lw=1, label=f"N={s['N']:,}, $\\rho$={s['rho']}")
+        ax[2].plot(t[~drifting], cv[~drifting], mk, color=col, ms=7)
+        ax[2].plot(t[drifting], cv[drifting], mk, color=col, mfc="white", ms=7)
+    ax[2].plot([], [], "o", color="gray", mfc="white", label="E/N still drifting (> 3$\\sigma$): overestimate")
     ax[2].axvline(SF_TC, color="gray", ls="--", label="S&F $T_c$")
     ax[2].set_xlabel("T")
     ax[2].set_ylabel(r"$C_v^{conf}/N = N\,\mathrm{var}(E/N)/T^2$")
-    ax[2].set_title("Configurational heat capacity (equilibrated runs)")
+    ax[2].set_title("Configurational heat capacity (production data)")
     ax[2].legend(fontsize=8)
     ax[2].grid(alpha=0.4)
 
