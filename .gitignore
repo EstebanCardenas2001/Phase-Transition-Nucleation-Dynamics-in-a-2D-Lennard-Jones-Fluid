@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 .pytest_cache/
 *.pt
+# 4K master render (472 MB) exceeds GitHub file limits
+outputs/*_4k.mp4
